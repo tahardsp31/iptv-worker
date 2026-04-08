@@ -1,0 +1,25 @@
+{
+  "name": "my-worker",
+  "version": "1.0.0",
+  "description": "Ultra IPTV Worker with auto servers and MAC handling",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "build": "echo 'Build step if needed'",
+    "deploy": "wrangler publish"
+  },
+  "author": "YourName",
+  "license": "MIT",
+  "dependencies": {
+    "node-fetch": "^3.4.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "wrangler": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
