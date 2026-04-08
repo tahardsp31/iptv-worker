@@ -1,3 +1,20 @@
+import http from "http";
+import fetch, { Request, Response, Headers } from "node-fetch";
+
+// ============================================================
+// Global Variables
+// ============================================================
+
+const SERVER_SCORE = new Map();
+const MAC_FAIL = new Map();
+const ACTIVE_SESSIONS = new Map();
+const TOKEN_CACHE = new Map();
+
+const FAIL_TTL = 30000;
+
+let G_SETTINGS = {};
+let G_STIME = Date.now();
+
 // ============================================================
 // Auto Servers
 // ============================================================
@@ -96,13 +113,9 @@ const AUTO_MACS = [
 // Ultra Cache System
 // ============================================================
 
-const TOKEN_CACHE = new Map()
 const PROFILE_CACHE = new Map()
-const SERVER_SCORE = new Map()
-const MAC_FAIL = new Map()
 
-const TOKEN_TTL = 600000 
-const FAIL_TTL = 60000
+const TOKEN_TTL = 600000
 const PROFILE_TTL = 600000 
 const RETRY_COUNT = 2
 const RETRY_DELAY = 1200
@@ -469,7 +482,6 @@ function forceMacTemporarilyBlocked(mac, ttlMs) {
   }
 }
 
-let G_SETTINGS = null, G_STIME = 0;
 let G_SERVERS = null, G_SRVTIME = 0;
 let G_TOKENS = new Map();
 const connectionPool = new Map();
@@ -480,7 +492,7 @@ let G_ACTIVE_SERVERS = null;
 let G_ACTIVE_MACS = null;
 let G_CACHE_TIME = 0;
 const LIVE_CACHE_TTL = 180000; // 3 min
-const ACTIVE_SESSIONS = new Map(); // Real-time session tracker
+// ACTIVE_SESSIONS is already declared at top of file
 
 export default {
   async fetch(request, env, ctx) {
@@ -862,6 +874,16 @@ async function initDB(db) {
   try { await db.exec('ALTER TABLE servers ADD COLUMN domains TEXT DEFAULT "[]"'); } catch (e) { }
   try { await db.exec('ALTER TABLE servers ADD COLUMN macs TEXT DEFAULT "[]"'); } catch (e) { }
 
+}
+
+// ============================================================
+// Database Functions
+// ============================================================
+
+async function ensureServerIdCol(db) {
+  try {
+    await db.exec(`ALTER TABLE macs ADD COLUMN server_id TEXT DEFAULT ''`);
+  } catch (e) {}
 }
 
 // ============================================================
@@ -3731,3 +3753,133 @@ fetchIP();
   parts.push('</body></html>');
   return parts.join('');
 }
+
+// ============================================================
+// Request Handler (Cloudflare Worker Logic)
+// ============================================================
+
+async function handleRequest(request) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const DEFAULT_MACS = [
+    "00:1A:79:33:DE:11","00:1A:79:44:BC:22","00:1A:79:55:AA:33","00:1A:79:44:EE:44","00:1A:79:32:00:55",
+    "00:1A:79:33:AA:66","00:1A:79:55:00:77","00:1A:79:44:00:88","00:1A:79:22:11:99","00:1A:79:33:BB:00"
+  ];
+
+  const CORS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
+
+  const userAgent = request.headers.get('User-Agent') || '';
+  const isTV = userAgent.includes('SMART-TV') || userAgent.includes('WebTV') || userAgent.includes('TV') ||
+    userAgent.includes('SmartTV') || userAgent.includes('BRAVIA') || userAgent.includes('LGTV') || userAgent.includes('Vizio');
+
+  if (request.method === 'OPTIONS') return new Response(null, { headers: CORS, status: 204 });
+  if (request.method === 'HEAD') return new Response(null, { status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/x-mpegurl; charset=utf-8' } });
+
+  // Mock database for Node.js environment
+  const db = null;
+
+  if (path === '/api/tokens' && request.method === 'GET') return apiGetTokens(db, CORS);
+  if (path === '/api/tokens/create' && request.method === 'POST') return apiCreateToken(request, db, CORS);
+  if (path === '/api/tokens/delete' && request.method === 'POST') return apiDeleteToken(request, db, CORS);
+  if (path === '/api/tokens/update' && request.method === 'POST') return apiUpdateToken(request, db, CORS);
+  if (path === '/api/tokens/validate' && request.method === 'GET') return apiValidateToken(db, CORS, url);
+  if (path === '/api/tokens/usage' && request.method === 'GET') return apiGetTokenUsage(db, CORS, url);
+  if (path === '/api/tokens/packages/add' && request.method === 'POST') return apiAddPackageToToken(request, db, CORS);
+  if (path === '/api/tokens/packages/add-multiple' && request.method === 'POST') return apiAddMultiplePackagesToToken(request, db, CORS);
+  if (path === '/api/tokens/packages/remove' && request.method === 'POST') return apiRemovePackageFromToken(request, db, CORS);
+  if (path === '/api/tokens/packages/reorder' && request.method === 'POST') return apiReorderTokenPackages(request, db, CORS);
+  if (path === '/api/tokens/days/add' && request.method === 'POST') return apiAddDays(request, db, CORS);
+  if (path === '/api/tokens/days/remove' && request.method === 'POST') return apiRemoveDays(request, db, CORS);
+  if (path === '/api/tokens/block-ip' && request.method === 'POST') return apiBlockIP(request, db, CORS);
+  if (path === '/api/tokens/blocked-ips' && request.method === 'GET') return apiGetBlockedIPs(db, CORS, url);
+
+  if (path === '/api/internal/stats' && request.method === 'GET') return await apiGetInternalStats({}, CORS);
+
+  if (path === '/api/macs' && request.method === 'GET') return apiGetMacs(db, CORS, DEFAULT_MACS);
+  if (path === '/api/macs' && request.method === 'POST') return apiSaveMacs(request, db, CORS);
+  if (path === '/api/macs/update' && request.method === 'POST') return apiUpdateMac(request, db, CORS);
+  if (path === '/api/macs/reset-stats' && request.method === 'POST') return apiResetMacStats(request, db, CORS);
+  if (path === '/api/macs/list' && request.method === 'GET') return apiGetMacsList(db, CORS, DEFAULT_MACS);
+  if (path === '/api/macs/pool' && request.method === 'GET') return apiGetMacPool(db, CORS, DEFAULT_MACS);
+
+  if (path === '/api/packages' && request.method === 'GET') {
+    let data = { success: true, data: {} };
+    return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=120", ...CORS } });
+  }
+
+  if (path === '/api/packages' && request.method === 'POST') return apiSavePackages(request, db, CORS, {});
+  if (path === '/api/packages/update' && request.method === 'POST') return apiUpdatePackage(request, db, CORS, {});
+  if (path === '/api/packages/reorder' && request.method === 'POST') return apiReorderGlobalPackages(request, db, CORS, {});
+  if (path === '/api/packages/delete-all' && request.method === 'POST') return apiDeleteAllPackages(request, db, CORS, {});
+  if (path === '/api/packages/delete' && request.method === 'POST') return apiDeletePackage(request, db, CORS, {});
+  if (path === '/api/channels/update' && request.method === 'POST') return apiUpdateChannel(request, db, CORS, {});
+  if (path === '/api/channels/delete' && request.method === 'POST') return apiDeleteChannel(request, db, CORS, {});
+  if (path === '/api/channels/reorder' && request.method === 'POST') return apiReorderChannels(request, db, CORS, {});
+  if (path === '/api/channels/domains' && request.method === 'GET') return apiGetChannelDomains(db, CORS);
+  if (path === '/api/channels/domains' && request.method === 'POST') return apiSaveChannelDomains(request, db, CORS);
+  if (path === '/api/settings' && request.method === 'GET') return apiGetSettings(db, CORS);
+  if (path === '/api/settings' && request.method === 'POST') return apiSaveSettings(request, db, CORS);
+  if (path === '/api/channels/macs' && request.method === 'POST') return apiSaveChannelMacs(request, db, CORS);
+  if (path === '/api/channels/rotate' && request.method === 'POST') return apiRotateChannelDomains(request, db, CORS);
+
+  if (path === '/api/servers' && request.method === 'GET') return apiGetServers(db, CORS);
+  if (path === '/api/servers' && request.method === 'POST') return apiSaveServers(request, db, CORS);
+  if (path === '/api/servers/delete' && request.method === 'POST') return apiDeleteServer(request, db, CORS);
+  if (path === '/api/stats' && request.method === 'GET') return apiGetStats(db, CORS);
+  if (path === '/api/upload/m3u' && request.method === 'POST') return apiUploadM3U(request, db, CORS, {});
+  if (path === '/api/debug' && request.method === 'GET') return apiDebug({}, db, CORS);
+  if (path === '/api/init-db' && request.method === 'POST') return apiInitDB(db, CORS);
+  if (path === '/api/init-servers-columns' && request.method === 'POST') return apiInitServerColumns(db, CORS);
+  if (path === '/api/init-channel-columns' && request.method === 'POST') return apiInitChannelColumns(db, CORS);
+  if (path === '/api/admin/sync-hardcoded' && request.method === 'POST') return apiSyncHardcoded(db, CORS);
+  if (path === '/api/admin/sessions/delete' && request.method === 'POST') return await apiDeleteSession(request, {}, CORS);
+  if (path === '/api/admin/sessions/clear' && request.method === 'POST') return await apiClearSessions({}, CORS);
+
+  if (path === '/playlist.m3u' || path === '/playlist.m3u8') return handlePlaylist(url, db, CORS);
+  if (path === '/hls-proxy') return handleHLSProxy(request, url, CORS);
+  if (path === '/live') return handleUltraLive(request, {}, {});
+  if (path === '/epg.xml' || path === '/epg.gz') return handleEPGProxy(CORS);
+  if (path.startsWith('/live/')) return handleUltraLive(request, {}, {});
+
+  if (path.startsWith('/live-advanced/')) return handleLiveStreamAdvanced(request, db, CORS);
+
+  if (path === '/' || path === '/panel' || path === '/admin') return renderPanel(url, {}, CORS, DEFAULT_MACS, isTV);
+
+  return Response.redirect(url.origin + '/', 302);
+}
+
+// ============================================================
+// Render Server Wrapper
+// ============================================================
+
+import http from "http";
+
+const PORT = process.env.PORT || 3000;
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = `http://${req.headers.host}${req.url}`;
+    const request = new Request(url, {
+      method: req.method,
+      headers: req.headers
+    });
+
+    const response = await handleRequest(request);
+
+    res.writeHead(response.status, Object.fromEntries(response.headers));
+    const body = await response.arrayBuffer();
+    res.end(Buffer.from(body));
+
+  } catch (err) {
+    res.writeHead(500);
+    res.end("Server Error: " + err.message);
+  }
+});
+
+server.listen(PORT, () => {
+  console.log("Ultra IPTV Server Running on port", PORT);
+});
