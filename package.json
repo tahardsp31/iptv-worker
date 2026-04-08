@@ -13,7 +13,7 @@
   "author": "YourName",
   "license": "MIT",
   "dependencies": {
-    "node-fetch": "^3.4.0"
+    "node-fetch": "3.3.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
