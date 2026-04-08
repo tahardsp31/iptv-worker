@@ -1886,9 +1886,7 @@ function makeAbsolute(uri, basePath) {
   return basePath + uri;
 }
 
-async function ensureServerIdCol(db) {
-  try { await db.exec('ALTER TABLE macs ADD COLUMN server_id TEXT DEFAULT ""'); } catch (e) { }
-}
+// ensureServerIdCol function is already defined above
 
 async function apiGetMacPool(db, CORS, defaultMacs) {
   await loadMacs(db, defaultMacs);
